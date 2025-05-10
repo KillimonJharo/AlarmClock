@@ -13,26 +13,27 @@ class AlarmClock:
     def __init__(self, root):
         self.root = root
         self.root.title("Продвинутый будильник")
-        self.root.geometry("500x550")
+        self.root.geometry("600x650")
 
         # Загрузка сохраненных настроек
         self.settings_file = "alarm_settings.json"
         self.settings = self.load_settings()
 
         # Переменные
-        self.alarm_time = tk.StringVar(value=self.settings.get("alarm_time", ""))
-        self.alarm_sound = tk.StringVar(value=self.settings.get("alarm_sound", "стандартный"))
-        self.custom_sound_path = tk.StringVar(value=self.settings.get("custom_sound_path", ""))
-        self.alarm_message = tk.StringVar(value=self.settings.get("alarm_message", "Пора вставать!"))
-        self.alarm_active = False
+        self.alarms = self.settings.get("alarms", [])  # Список активных будильников
+        self.current_alarm = {}  # Текущие настройки для нового будильника
+        self.alarm_time = tk.StringVar(value="")
+        self.alarm_sound = tk.StringVar(value="стандартный")
+        self.custom_sound_path = tk.StringVar(value="")
+        self.alarm_message = tk.StringVar(value="Пора вставать!")
         self.days_vars = {
-            "Пн": tk.BooleanVar(value=self.settings.get("days", {}).get("Пн", False)),
-            "Вт": tk.BooleanVar(value=self.settings.get("days", {}).get("Вт", False)),
-            "Ср": tk.BooleanVar(value=self.settings.get("days", {}).get("Ср", False)),
-            "Чт": tk.BooleanVar(value=self.settings.get("days", {}).get("Чт", False)),
-            "Пт": tk.BooleanVar(value=self.settings.get("days", {}).get("Пт", False)),
-            "Сб": tk.BooleanVar(value=self.settings.get("days", {}).get("Сб", False)),
-            "Вс": tk.BooleanVar(value=self.settings.get("days", {}).get("Вс", False))
+            "Пн": tk.BooleanVar(value=False),
+            "Вт": tk.BooleanVar(value=False),
+            "Ср": tk.BooleanVar(value=False),
+            "Чт": tk.BooleanVar(value=False),
+            "Пт": tk.BooleanVar(value=False),
+            "Сб": tk.BooleanVar(value=False),
+            "Вс": tk.BooleanVar(value=False)
         }
 
         # Создание интерфейса
@@ -50,16 +51,20 @@ class AlarmClock:
         days_tab = ttk.Frame(tab_control)
         tab_control.add(days_tab, text="Дни недели")
 
+        # Вкладка списка будильников
+        alarms_tab = ttk.Frame(tab_control)
+        tab_control.add(alarms_tab, text="Мои будильники")
+
         tab_control.pack(expand=1, fill="both")
 
         # Основные настройки (вкладка 1)
-        tk.Label(main_tab, text="Установите время будильника (ЧЧММ или ЧЧ:ММ):").pack(pady=5)
+        tk.Label(main_tab, text="Установите время будильника (ЧЧ:ММ):").pack(pady=5)
 
         vcmd = (self.root.register(self.validate_time_input), '%P')
         self.time_entry = tk.Entry(main_tab, textvariable=self.alarm_time,
                                    font=('Arial', 14), validate='key', validatecommand=vcmd)
         self.time_entry.pack()
-        tk.Label(main_tab, text="Пример: 730 или 07:30").pack()
+        tk.Label(main_tab, text="Пример: 07:30").pack()
 
         # Выбор звука
         tk.Label(main_tab, text="Выберите звук будильника:").pack(pady=5)
@@ -89,8 +94,8 @@ class AlarmClock:
         btn_frame = tk.Frame(main_tab)
         btn_frame.pack(pady=10)
 
-        tk.Button(btn_frame, text="Установить будильник", command=self.set_alarm).pack(side='left', padx=5)
-        tk.Button(btn_frame, text="Выключить будильник", command=self.stop_alarm).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="Добавить будильник", command=self.add_alarm).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="Остановить все", command=self.stop_all_alarms).pack(side='left', padx=5)
 
         # Текущее время
         self.time_label = tk.Label(main_tab, text="", font=('Arial', 16))
@@ -105,6 +110,18 @@ class AlarmClock:
         for i, (day, var) in enumerate(self.days_vars.items()):
             tk.Checkbutton(days_frame, text=day, variable=var).grid(row=i // 4, column=i % 4, padx=10, pady=5,
                                                                     sticky='w')
+
+        # Список будильников (вкладка 3)
+        self.alarms_listbox = tk.Listbox(alarms_tab, height=15, font=('Arial', 12))
+        self.alarms_listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        btn_frame_alarms = tk.Frame(alarms_tab)
+        btn_frame_alarms.pack(pady=5)
+
+        tk.Button(btn_frame_alarms, text="Удалить", command=self.remove_alarm).pack(side='left', padx=5)
+        tk.Button(btn_frame_alarms, text="Остановить", command=self.stop_selected_alarm).pack(side='left', padx=5)
+
+        self.update_alarms_list()
 
         # Обновление времени
         self.update_time()
@@ -147,46 +164,98 @@ class AlarmClock:
         current_weekday = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][datetime.today().weekday()]
         self.time_label.config(text=f"Текущее время: {current_time}\nТекущий день: {current_weekday}")
 
-        if self.alarm_active:
-            try:
-                alarm_time = self.format_time_input(self.alarm_time.get())
-                current_time_no_sec = time.strftime("%H:%M")
+        # Проверяем все активные будильники
+        current_time_no_sec = time.strftime("%H:%M")
+        for alarm in self.alarms:
+            if alarm.get('active', False):
+                try:
+                    # Проверяем день недели (если выбраны дни)
+                    selected_days = alarm.get('days', [])
+                    day_check = (not selected_days) or (current_weekday in selected_days)
 
-                # Проверяем день недели (если выбраны дни)
-                selected_days = [day for day, var in self.days_vars.items() if var.get()]
-                day_check = (not selected_days) or (current_weekday in selected_days)
-
-                if current_time_no_sec == alarm_time and day_check:
-                    self.trigger_alarm()
-            except:
-                pass
+                    if current_time_no_sec == alarm['time'] and day_check:
+                        self.trigger_alarm(alarm)
+                except:
+                    pass
 
         self.root.after(1000, self.update_time)
 
-    def set_alarm(self):
+    def add_alarm(self):
         try:
             time_str = self.format_time_input(self.alarm_time.get())
             datetime.strptime(time_str, "%H:%M")
-            self.alarm_active = True
+
+            # Собираем выбранные дни
+            selected_days = [day for day, var in self.days_vars.items() if var.get()]
+
+            new_alarm = {
+                'time': time_str,
+                'sound': self.alarm_sound.get(),
+                'custom_sound': self.custom_sound_path.get(),
+                'message': self.alarm_message.get(),
+                'days': selected_days,
+                'active': True
+            }
+
+            self.alarms.append(new_alarm)
             self.save_settings()
-            messagebox.showinfo("Будильник", f"Будильник установлен на {time_str}")
+            self.update_alarms_list()
+            messagebox.showinfo("Будильник", f"Будильник на {time_str} добавлен")
+
+            # Сбрасываем поля ввода
+            self.alarm_time.set("")
+            for var in self.days_vars.values():
+                var.set(False)
+
         except ValueError:
-            messagebox.showerror("Ошибка", "Пожалуйста, введите корректное время (ЧЧММ или ЧЧ:ММ)")
+            messagebox.showerror("Ошибка", "Пожалуйста, введите корректное время (ЧЧ:ММ)")
 
-    def stop_alarm(self):
-        self.alarm_active = False
-        messagebox.showinfo("Будильник", "Будильник выключен")
+    def stop_all_alarms(self):
+        for alarm in self.alarms:
+            alarm['active'] = False
+        self.save_settings()
+        messagebox.showinfo("Будильник", "Все будильники остановлены")
 
-    def trigger_alarm(self):
-        self.alarm_active = False
-        sound_thread = threading.Thread(target=self.play_sound)
+    def stop_selected_alarm(self):
+        selection = self.alarms_listbox.curselection()
+        if selection:
+            index = selection[0]
+            self.alarms[index]['active'] = False
+            self.save_settings()
+            self.update_alarms_list()
+            messagebox.showinfo("Будильник", "Выбранный будильник остановлен")
+
+    def remove_alarm(self):
+        selection = self.alarms_listbox.curselection()
+        if selection:
+            index = selection[0]
+            del self.alarms[index]
+            self.save_settings()
+            self.update_alarms_list()
+            messagebox.showinfo("Будильник", "Будильник удален")
+
+    def update_alarms_list(self):
+        self.alarms_listbox.delete(0, tk.END)
+        for alarm in self.alarms:
+            days = ', '.join(alarm['days']) if alarm['days'] else 'каждый день'
+            status = "Активен" if alarm.get('active', False) else "Не активен"
+            self.alarms_listbox.insert(tk.END,
+                                       f"{alarm['time']} | {days} | {alarm['message']} | {status}")
+
+    def trigger_alarm(self, alarm):
+        # Помечаем будильник как неактивный, чтобы не срабатывал повторно
+        alarm['active'] = False
+        self.save_settings()
+        self.update_alarms_list()
+
+        sound_thread = threading.Thread(target=self.play_sound, args=(alarm,))
         sound_thread.daemon = True
         sound_thread.start()
 
-        messagebox.showinfo("Будильник", self.alarm_message.get())
+        messagebox.showinfo("Будильник", alarm['message'])
 
-    def play_sound(self):
-        sound_type = self.alarm_sound.get()
+    def play_sound(self, alarm):
+        sound_type = alarm['sound']
 
         if sound_type == "стандартный":
             for _ in range(5):
@@ -196,27 +265,23 @@ class AlarmClock:
             tones = [659, 659, 659, 523, 659, 784, 392]
             for tone in tones:
                 winsound.Beep(tone, 500)
-        elif sound_type == "свой звук" and self.custom_sound_path.get():
+        elif sound_type == "свой звук" and alarm.get('custom_sound'):
             try:
                 # Для WAV файлов
-                if self.custom_sound_path.get().lower().endswith('.wav'):
-                    winsound.PlaySound(self.custom_sound_path.get(), winsound.SND_FILENAME)
+                if alarm['custom_sound'].lower().endswith('.wav'):
+                    winsound.PlaySound(alarm['custom_sound'], winsound.SND_FILENAME)
                 # Для MP3 и других форматов потребуется дополнительная библиотека
             except Exception as e:
                 messagebox.showerror("Ошибка", f"Не удалось воспроизвести файл: {e}")
 
     def save_settings(self):
         settings = {
-            "alarm_time": self.alarm_time.get(),
-            "alarm_sound": self.alarm_sound.get(),
-            "custom_sound_path": self.custom_sound_path.get(),
-            "alarm_message": self.alarm_message.get(),
-            "days": {day: var.get() for day, var in self.days_vars.items()}
+            "alarms": self.alarms
         }
 
         try:
             with open(self.settings_file, 'w') as f:
-                json.dump(settings, f)
+                json.dump(settings, f, indent=2)
         except Exception as e:
             print(f"Ошибка сохранения настроек: {e}")
 
